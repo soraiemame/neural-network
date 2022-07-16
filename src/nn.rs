@@ -17,29 +17,27 @@ const LR: f64 = 0.01;
 impl NeuralNetwork {
     pub fn new(nodes: Vec<usize>) -> Self {
         let mut w = vec![];
-        w.reserve(3 - 1);
-        for i in 0..3 - 1 {
+        w.reserve(nodes.len() - 1);
+        for i in 0..nodes.len() - 1 {
             let mut wi = Matrix::new(nodes[i] + 1, nodes[i + 1]);
             let normal = Normal::new(0.0, 1.0 / (nodes[i] as f64).sqrt()).unwrap();
             for j in 0..nodes[i] + 1 {
                 for k in 0..nodes[i + 1] {
                     wi[j][k] = normal.sample(&mut thread_rng());
-                    // wi[j][k] = 0.0;
                 }
             }
             w.push(wi);
         }
         Self {
-            // a: a,
             w: w,
             nodes: nodes
         }
     }
     // a[0]は埋まっている
-    pub fn forward(&mut self,x: &Vec<f64>) -> Vec<Vec<f64>> {
+    pub fn forward(&self,x: &Vec<f64>) -> Vec<Vec<f64>> {
         let mut a = vec![];
-        a.reserve(3);
-        for i in 0..3 {
+        a.reserve(self.nodes.len());
+        for i in 0..self.nodes.len() {
             a.push(vec![1.0;self.nodes[i]]);
         }
         for i in 0..a[0].len() {
@@ -66,8 +64,8 @@ impl NeuralNetwork {
     }
     pub fn backward(&mut self,a: &Vec<Vec<f64>>,x: &Vec<f64>,y: &Vec<f64>,t: &Vec<f64>) -> Vec<Matrix> {
         let mut dw = vec![];
-        dw.reserve(3 - 1);
-        for i in 0..3 - 1 {
+        dw.reserve(self.nodes.len() - 1);
+        for i in 0..self.nodes.len() - 1 {
             let mut wi = Matrix::new(self.nodes[i] + 1, self.nodes[i + 1]);
             for j in 0..self.nodes[i] + 1 {
                 for k in 0..self.nodes[i + 1] {
@@ -127,8 +125,8 @@ impl NeuralNetwork {
     pub fn train_mul(&mut self,x: &Vec<Vec<f64>>,t: &Vec<Vec<f64>>) {
         assert_eq!(x.len(),t.len());
         let mut dw_avr = vec![];
-        dw_avr.reserve(3 - 1);
-        for i in 0..3 - 1 {
+        dw_avr.reserve(self.nodes.len() - 1);
+        for i in 0..self.nodes.len() - 1 {
             let mut wi = Matrix::new(self.nodes[i] + 1, self.nodes[i + 1]);
             for j in 0..self.nodes[i] + 1 {
                 for k in 0..self.nodes[i + 1] {
@@ -159,6 +157,10 @@ impl NeuralNetwork {
                 }
             }
         }
+    }
+    pub fn predict(&self,x: &Vec<f64>) -> Vec<f64> {
+        let res = self.forward(x);
+        res[self.nodes.len() - 1].clone()
     }
 }
 
