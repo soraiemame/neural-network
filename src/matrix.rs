@@ -4,15 +4,19 @@ use std::ops::{Index, IndexMut};
 pub struct Matrix {
     pub h: usize,
     pub w: usize,
-    pub dat: Vec<Vec<f64>>
+    pub dat: Vec<Vec<f64>>,
 }
 
 impl Matrix {
-    pub fn new(h: usize,w: usize) -> Self {
-        Self { h: h, w: w, dat: vec![vec![0.0;w];h] }
+    pub fn new(h: usize, w: usize) -> Self {
+        Self {
+            h: h,
+            w: w,
+            dat: vec![vec![0.0; w]; h],
+        }
     }
-    pub fn matmul(&self,rhs: &Matrix) -> Matrix {
-        assert_eq!(self.w,rhs.h);
+    pub fn matmul(&self, rhs: &Matrix) -> Matrix {
+        assert_eq!(self.w, rhs.h);
         let mut res = Matrix::new(self.h, rhs.w);
         for i in 0..self.h {
             for j in 0..rhs.w {
@@ -23,9 +27,9 @@ impl Matrix {
         }
         res
     }
-    pub fn hadamard(&self,rhs: &Matrix) -> Matrix {
-        assert_eq!(self.h,rhs.h);
-        assert_eq!(self.w,rhs.w);
+    pub fn hadamard(&self, rhs: &Matrix) -> Matrix {
+        assert_eq!(self.h, rhs.h);
+        assert_eq!(self.w, rhs.w);
         let mut res = Matrix::new(self.h, self.w);
         for i in 0..self.h {
             for j in 0..self.w {
@@ -43,9 +47,9 @@ impl Matrix {
         }
         res
     }
-    pub fn apply<F>(&self,f: F) -> Matrix
+    pub fn apply<F>(&self, f: F) -> Matrix
     where
-        F: Fn(f64) -> f64
+        F: Fn(f64) -> f64,
     {
         let mut res = Matrix::new(self.h, self.w);
         for i in 0..self.h {
