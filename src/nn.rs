@@ -1,25 +1,42 @@
-#![allow(unused_imports)]
+
+use std::marker::PhantomData;
+
 use rand_distr::{Normal, Distribution};
 use rand::thread_rng;
 
-pub use neural_network::matrix::Matrix;
+// pub use neural_network::matrix::Matrix;
 
-#[derive(Debug)]
-pub struct NeuralNetwork {
-    // w: Vec<Vec<Vec<f64>>>,
-    pub w: Vec<Matrix>, // バイアスも(最後)
-    nodes: Vec<usize>
+macro_rules! mat {
+    ($e:expr; $d:expr) => { vec![$e; $d] };
+    ($e:expr; $d:expr $(; $ds:expr)+) => { vec![mat![$e $(; $ds)*]; $d] };
 }
 
 // const LR: f64 = 0.01;
 const LR: f64 = 0.01;
 
-impl NeuralNetwork {
-    pub fn new(nodes: Vec<usize>) -> Self {
+pub trait NNFunc {
+    fn f(x: f64) -> f64;
+    fn f_delta(x: f64) -> f64;
+}
+
+#[derive(Debug)]
+pub struct NeuralNetwork<Hidden: NNFunc,Output: NNFunc> {
+    w: Vec<Vec<Vec<f64>>>, // バイアスも(最後)
+    nodes: Vec<usize>,
+    _hidden: PhantomData<Hidden>,
+    _output: PhantomData<Output>
+}
+
+impl<Hidden: NNFunc,Output: NNFunc> NeuralNetwork<Hidden,Output> {
+    pub fn new(nodes: Vec<usize>) -> Self
+    where Hidden: NNFunc,
+          Output: NNFunc
+    {
         let mut w = vec![];
         w.reserve(nodes.len() - 1);
         for i in 0..nodes.len() - 1 {
-            let mut wi = Matrix::new(nodes[i] + 1, nodes[i + 1]);
+            // let mut wi = Matrix::new(nodes[i] + 1, nodes[i + 1]);
+            let mut wi = mat![0.0;nodes[i] + 1;nodes[i + 1]];
             let normal = Normal::new(0.0, 1.0 / (nodes[i] as f64).sqrt()).unwrap();
             for j in 0..nodes[i] + 1 {
                 for k in 0..nodes[i + 1] {
@@ -30,11 +47,13 @@ impl NeuralNetwork {
         }
         Self {
             w: w,
-            nodes: nodes
+            nodes: nodes,
+            _hidden: PhantomData,
+            _output: PhantomData
         }
     }
     // a[0]は埋まっている
-    pub fn forward(&self,x: &Vec<f64>) -> Vec<Vec<f64>> {
+    fn forward(&self,x: &Vec<f64>) -> Vec<Vec<f64>> {
         let mut a = vec![];
         a.reserve(self.nodes.len());
         for i in 0..self.nodes.len() {
@@ -43,30 +62,34 @@ impl NeuralNetwork {
         for i in 0..a[0].len() {
             a[0][i] = x[i];
         }
-        let mut cur = Matrix::new(1, a[0].len());
+        let mut cur = vec![0.0;a[0].len() + 1];
         for i in 0..a[0].len() {
-            cur[0][i] = a[0][i];
+            cur[i] = a[0][i];
         }
-        cur[0].push(1.0);
-        cur.w += 1;
+        cur[a[0].len()] = 1.0;
         for i in 1..a.len() {
             let bw = &self.w[i - 1];
-            cur = cur.matmul(bw);
+            let mut mul = vec![0.0;a[i].len()];
             for j in 0..a[i].len() {
-                a[i][j] = cur[0][j];
+                for k in 0..cur.len() {
+                    mul[j] += cur[k] * bw[k][j];
+                }
             }
-            if i == a.len() - 1 { cur = cur.apply(output_activation); }
-            else { cur = cur.apply(hidden_activation); }
-            cur[0].push(1.0);
-            cur.w += 1;
+            cur = mul;
+            for j in 0..a[i].len() {
+                a[i][j] = cur[j];
+            }
+            if i == a.len() - 1 { cur = cur.iter().map(|x| Output::f(*x)).collect::<Vec<_>>(); }
+            else { cur = cur.iter().map(|x| Hidden::f(*x)).collect::<Vec<_>>(); }
+            cur.push(1.0);
         }
         a
     }
-    pub fn backward(&mut self,a: &Vec<Vec<f64>>,x: &Vec<f64>,y: &Vec<f64>,t: &Vec<f64>) -> Vec<Matrix> {
+    fn backward(&mut self,a: &Vec<Vec<f64>>,x: &Vec<f64>,y: &Vec<f64>,t: &Vec<f64>) -> Vec<Vec<Vec<f64>>> {
         let mut dw = vec![];
         dw.reserve(self.nodes.len() - 1);
         for i in 0..self.nodes.len() - 1 {
-            let mut wi = Matrix::new(self.nodes[i] + 1, self.nodes[i + 1]);
+            let mut wi = mat![0.0;self.nodes[i] + 1;self.nodes[i + 1]];
             for j in 0..self.nodes[i] + 1 {
                 for k in 0..self.nodes[i + 1] {
                     wi[j][k] = 0.0;
@@ -74,38 +97,59 @@ impl NeuralNetwork {
             }
             dw.push(wi);
         }
-        let mut delta = Matrix::new(a[a.len() - 1].len(), 1);
+
+        let mut delta = vec![0.0;a[a.len() - 1].len()];
         for i in 0..a[a.len() - 1].len() {
-            delta[i][0] = (y[i] - t[i]) * output_activation_delta(a[a.len() - 1][i]);
+            delta[i] = (y[i] - t[i]) * Output::f_delta(a[a.len() - 1][i]);
         }
         for i in (0..a.len() - 1).rev() {
             if i == 0 {
-                let mut cur = Matrix::new(x.len() + 1, 1);
+                let mut cur = vec![0.0;x.len() + 1];
                 for j in 0..x.len() {
-                    cur[j][0] = x[j];
+                    cur[j] = x[j];
                 }
-                cur[x.len()][0] = 1.0;
-                dw[i] = cur.matmul(&delta.transpose());
+                cur[x.len()] = 1.0;
+                let mut res = mat![0.0;cur.len();delta.len()];
+                for j in 0..res.len() {
+                    for k in 0..res[0].len() {
+                        res[j][k] = cur[j] * delta[k];
+                    }
+                }
+                dw[i] = res;
             }
             else {
-                let mut cur = Matrix::new(a[i].len() + 1, 1);
+                let mut cur = vec![0.0;a[i].len() + 1];
                 for j in 0..a[i].len() {
-                    cur[j][0] = hidden_activation(a[i][j]);
+                    cur[j] = Hidden::f(a[i][j]);
                 }
-                cur[a[i].len()][0] = 1.0;
-                dw[i] = cur.matmul(&delta.transpose());
-                let mut w = Matrix::new(a[i].len(), a[i + 1].len());
+                cur[a[i].len()] = 1.0;
+                let mut res = mat![0.0;cur.len();delta.len()];
+                for j in 0..res.len() {
+                    for k in 0..res[0].len() {
+                        res[j][k] = cur[j] * delta[k];
+                    }
+                }
+                dw[i] = res;
+                let mut w = mat![0.0;a[i].len();a[i + 1].len()];
                 for j in 0..a[i].len() {
                     for k in 0..a[i + 1].len() {
                         w[j][k] = self.w[i][j][k];
                     }
                 }
-                cur = Matrix::new(a[i].len(),1);
+                let mut cur = vec![0.0;a[i].len()];
                 for j in 0..a[i].len() {
-                    cur[j][0] = hidden_activation_delta(a[i][j]);
+                    cur[j] = Hidden::f_delta(a[i][j]);
                 }
-                delta = w.matmul(&delta);
-                delta = delta.hadamard(&cur);
+                let mut next_delta = vec![0.0;w.len()];
+                for j in 0..w.len() {
+                    for k in 0..w[0].len() {
+                        next_delta[j] += delta[k] * w[j][k];
+                    }
+                }
+                delta = next_delta;
+                for j in 0..w.len() {
+                    delta[j] *= cur[j];
+                }
             }
         }
         dw
@@ -115,8 +159,8 @@ impl NeuralNetwork {
         let y = a[a.len() - 1].clone();
         let dw = self.backward(&a, x, &y, t);
         for i in 0..self.nodes.len() - 1 {
-            for j in 0..self.w[i].h {
-                for k in 0..self.w[i].w {
+            for j in 0..self.w[i].len() {
+                for k in 0..self.w[i][0].len() {
                     self.w[i][j][k] -= LR * dw[i][j][k];
                 }
             }
@@ -127,7 +171,7 @@ impl NeuralNetwork {
         let mut dw_avr = vec![];
         dw_avr.reserve(self.nodes.len() - 1);
         for i in 0..self.nodes.len() - 1 {
-            let mut wi = Matrix::new(self.nodes[i] + 1, self.nodes[i + 1]);
+            let mut wi = mat![0.0;self.nodes[i] + 1;self.nodes[i + 1]];
             for j in 0..self.nodes[i] + 1 {
                 for k in 0..self.nodes[i + 1] {
                     wi[j][k] = 0.0;
@@ -141,8 +185,8 @@ impl NeuralNetwork {
             let y = a[a.len() - 1].clone();
             let dw = self.backward(&a, &x[i], &y, &t[i]);
             for j in 0..self.nodes.len() - 1 {
-                for k in 0..self.w[j].h {
-                    for l in 0..self.w[j].w {
+                for k in 0..self.w[j].len() {
+                    for l in 0..self.w[j][0].len() {
                         dw_avr[j][k][l] += dw[j][k][l];
                     }
                 }
@@ -150,8 +194,8 @@ impl NeuralNetwork {
         }
         
         for i in 0..self.nodes.len() - 1 {
-            for j in 0..self.w[i].h {
-                for k in 0..self.w[i].w {
+            for j in 0..self.w[i].len() {
+                for k in 0..self.w[i][0].len() {
                     dw_avr[i][j][k] /= n as f64;
                     self.w[i][j][k] -= LR * dw_avr[i][j][k];
                 }
@@ -163,23 +207,3 @@ impl NeuralNetwork {
         res[self.nodes.len() - 1].clone()
     }
 }
-
-fn hidden_activation(x: f64) -> f64 {
-    1.0 / (1.0 + f64::exp(-x))
-
-    // if x > 0.0 { 1.0 }
-    // else { 0.0 }
-
-    // (x.exp() - (-x).exp()) / (x.exp() + (-x).exp())
-}
-
-fn hidden_activation_delta(x: f64) -> f64 {
-    (1.0 - hidden_activation(x)) * hidden_activation(x)
-    // todo!()
-}
-
-fn output_activation(x: f64) -> f64 {
-    x
-}
-
-fn output_activation_delta(_x: f64) -> f64 { 1.0 }
