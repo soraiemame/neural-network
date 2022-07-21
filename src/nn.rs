@@ -17,19 +17,24 @@ pub trait NNFunc {
     fn f_delta(x: f64) -> f64;
 }
 
+pub trait NNFuncOutput {
+    fn f(a: &Vec<f64>) -> Vec<f64>;
+    fn f_delta(x: f64, y: f64, t: f64) -> f64;
+}
+
 #[derive(Debug)]
-pub struct NeuralNetwork<Hidden: NNFunc, Output: NNFunc> {
+pub struct NeuralNetwork<Hidden: NNFunc, Output: NNFuncOutput> {
     w: Vec<Vec<Vec<f64>>>, // バイアスも(最後)
     nodes: Vec<usize>,
     _hidden: PhantomData<Hidden>,
     _output: PhantomData<Output>,
 }
 
-impl<Hidden: NNFunc, Output: NNFunc> NeuralNetwork<Hidden, Output> {
+impl<Hidden: NNFunc, Output: NNFuncOutput> NeuralNetwork<Hidden, Output> {
     pub fn new(nodes: Vec<usize>) -> Self
     where
         Hidden: NNFunc,
-        Output: NNFunc,
+        Output: NNFuncOutput,
     {
         let mut w = vec![];
         w.reserve(nodes.len() - 1);
@@ -44,129 +49,193 @@ impl<Hidden: NNFunc, Output: NNFunc> NeuralNetwork<Hidden, Output> {
             w.push(wi);
         }
         Self {
-            w: w,
-            nodes: nodes,
+            w,
+            nodes,
             _hidden: PhantomData,
             _output: PhantomData,
         }
     }
-    fn forward(&self, x: &Vec<f64>) -> Vec<Vec<f64>> {
+    unsafe fn forward(&self, x: &Vec<f64>) -> (Vec<Vec<f64>>, Vec<f64>) {
         let mut a = vec![];
         a.reserve(self.nodes.len());
         for i in 0..self.nodes.len() {
-            a.push(vec![1.0; self.nodes[i]]);
+            a.push(vec![1.0; *self.nodes.get_unchecked(i)]);
         }
-        for i in 0..a[0].len() {
-            a[0][i] = x[i];
+        // let sz0 = a.get_unchecked(0).len();
+        let sz0 = *self.nodes.get_unchecked(0);
+        for i in 0..sz0 {
+            // a[0][i] = x[i];
+            *a.get_unchecked_mut(0).get_unchecked_mut(i) = *x.get_unchecked(i);
         }
-        let mut cur = vec![0.0; a[0].len() + 1];
-        for i in 0..a[0].len() {
-            cur[i] = a[0][i];
+        let mut cur = vec![0.0; sz0 + 1];
+        for i in 0..sz0 {
+            // cur[i] = a[0][i];
+            *cur.get_unchecked_mut(i) = *a.get_unchecked(0).get_unchecked(i);
         }
-        cur[a[0].len()] = 1.0;
-        for i in 1..a.len() {
-            let bw = &self.w[i - 1];
-            let mut mul = vec![0.0; a[i].len()];
-            for j in 0..a[i].len() {
-                for k in 0..cur.len() {
-                    mul[j] += cur[k] * bw[k][j];
+        // cur[a[0].len()] = 1.0;
+        *cur.get_unchecked_mut(sz0) = 1.0;
+        let sza = a.len();
+        for i in 1..sza {
+            // let bw = &self.w[i - 1];
+            let bw = self.w.get_unchecked(i - 1);
+            // let szi = a.get_unchecked(i).len();
+            let szi = *self.nodes.get_unchecked(i);
+            // let mut mul = vec![0.0; a[i].len()];
+            let mut mul = vec![0.0; szi + 1];
+            // for j in 0..szi {
+            //     for k in 0..cur.len() {
+            //         // mul[j] += cur[k] * bw[k][j];
+            //         *mul.get_unchecked_mut(j) += *cur.get_unchecked(k) * *bw.get_unchecked(k).get_unchecked(j);
+            //     }
+            // }
+            for k in 0..cur.len() {
+                for j in 0..szi {
+                    // mul[j] += cur[k] * bw[k][j];
+                    *mul.get_unchecked_mut(j) +=
+                        *cur.get_unchecked(k) * *bw.get_unchecked(k).get_unchecked(j);
                 }
             }
+            // mul[szi] = 1.0;
+            *mul.get_unchecked_mut(szi) = 1.0;
             cur = mul;
-            for j in 0..a[i].len() {
-                a[i][j] = cur[j];
+            for j in 0..szi {
+                // a[i][j] = cur[j];
+                *a.get_unchecked_mut(i).get_unchecked_mut(j) = *cur.get_unchecked(j);
             }
-            if i == a.len() - 1 {
-                cur = cur.iter().map(|x| Output::f(*x)).collect::<Vec<_>>();
-            } else {
+            if i != sza - 1 {
                 cur = cur.iter().map(|x| Hidden::f(*x)).collect::<Vec<_>>();
+            } else {
+                cur.pop();
+                cur = Output::f(&cur);
             }
-            cur.push(1.0);
         }
-        a
+        (a, cur)
     }
-    fn backward(
+    unsafe fn backward(
         &mut self,
         a: &Vec<Vec<f64>>,
         x: &Vec<f64>,
         y: &Vec<f64>,
         t: &Vec<f64>,
     ) -> Vec<Vec<Vec<f64>>> {
+        let n = self.nodes.len();
         let mut dw = vec![];
-        dw.reserve(self.nodes.len() - 1);
-        for i in 0..self.nodes.len() - 1 {
-            let mut wi = mat![0.0;self.nodes[i] + 1;self.nodes[i + 1]];
-            for j in 0..self.nodes[i] + 1 {
-                for k in 0..self.nodes[i + 1] {
-                    wi[j][k] = 0.0;
+        dw.reserve(n - 1);
+        for i in 0..n - 1 {
+            // let mut wi = mat![0.0;self.nodes[i] + 1;self.nodes[i + 1]];
+            let cur = *self.nodes.get_unchecked(i) + 1;
+            let nxt = *self.nodes.get_unchecked(i + 1);
+            let mut wi = mat![0.0;cur;nxt];
+            for j in 0..cur {
+                for k in 0..nxt {
+                    // wi[j][k] = 0.0;
+                    *wi.get_unchecked_mut(j).get_unchecked_mut(k) = 0.0;
                 }
             }
             dw.push(wi);
         }
 
-        let mut delta = vec![0.0; a[a.len() - 1].len()];
-        for i in 0..a[a.len() - 1].len() {
-            delta[i] = (y[i] - t[i]) * Output::f_delta(a[a.len() - 1][i]);
+        let szl = a.get_unchecked(n - 1).len();
+        let mut delta = vec![0.0; szl];
+        for i in 0..szl {
+            // delta[i] = Output::f_delta(a[a.len() - 1][i], y[i], t[i]);
+            *delta.get_unchecked_mut(i) = Output::f_delta(
+                *a.get_unchecked(n).get_unchecked(i),
+                *y.get_unchecked(i),
+                *t.get_unchecked(i),
+            );
         }
-        for i in (0..a.len() - 1).rev() {
+        for i in (0..n - 1).rev() {
             if i == 0 {
-                let mut cur = vec![0.0; x.len() + 1];
-                for j in 0..x.len() {
-                    cur[j] = x[j];
+                let szx = x.len();
+                let mut cur = vec![0.0; szx + 1];
+                for j in 0..szx {
+                    // cur[j] = x[j];
+                    *cur.get_unchecked_mut(j) = *x.get_unchecked(j);
                 }
-                cur[x.len()] = 1.0;
-                let mut res = mat![0.0;cur.len();delta.len()];
-                for j in 0..res.len() {
-                    for k in 0..res[0].len() {
-                        res[j][k] = cur[j] * delta[k];
+                // cur[szx] = 1.0;
+                *cur.get_unchecked_mut(szx) = 1.0;
+                let h = cur.len();
+                let w = delta.len();
+                let mut res = mat![0.0;h;w];
+                for j in 0..h {
+                    for k in 0..w {
+                        // res[j][k] = cur[j] * delta[k];
+                        *res.get_unchecked_mut(j).get_unchecked_mut(k) =
+                            *cur.get_unchecked(j) * *delta.get_unchecked(k);
                     }
                 }
-                dw[i] = res;
+                // dw[i] = res;
+                *dw.get_unchecked_mut(i) = res;
             } else {
-                let mut cur = vec![0.0; a[i].len() + 1];
-                for j in 0..a[i].len() {
-                    cur[j] = Hidden::f(a[i][j]);
+                let szi = *self.nodes.get_unchecked(i);
+                let mut cur = vec![0.0; szi + 1];
+                for j in 0..szi {
+                    // cur[j] = Hidden::f(a[i][j]);
+                    *cur.get_unchecked_mut(j) = Hidden::f(*a.get_unchecked(i).get_unchecked(j));
                 }
-                cur[a[i].len()] = 1.0;
-                let mut res = mat![0.0;cur.len();delta.len()];
-                for j in 0..res.len() {
-                    for k in 0..res[0].len() {
-                        res[j][k] = cur[j] * delta[k];
+                // cur[a[i].len()] = 1.0;
+                *cur.get_unchecked_mut(szi) = 1.0;
+                let height = cur.len();
+                let width = delta.len();
+                let mut res = mat![0.0;height;width];
+                for j in 0..height {
+                    for k in 0..width {
+                        // res[j][k] = cur[j] * delta[k];
+                        *res.get_unchecked_mut(j).get_unchecked_mut(k) =
+                            *cur.get_unchecked(j) * *delta.get_unchecked(k);
                     }
                 }
-                dw[i] = res;
-                let mut w = mat![0.0;a[i].len();a[i + 1].len()];
-                for j in 0..a[i].len() {
-                    for k in 0..a[i + 1].len() {
-                        w[j][k] = self.w[i][j][k];
+                // dw[i] = res;
+                *dw.get_unchecked_mut(i) = res;
+                let cur_sz = *self.nodes.get_unchecked(i);
+                let nxt_sz = *self.nodes.get_unchecked(i + 1);
+                let mut w = mat![0.0;cur_sz;nxt_sz];
+                for j in 0..cur_sz {
+                    for k in 0..nxt_sz {
+                        // w[j][k] = self.w[i][j][k];
+                        *w.get_unchecked_mut(j).get_unchecked_mut(k) =
+                            *self.w.get_unchecked(i).get_unchecked(j).get_unchecked(k);
                     }
                 }
-                let mut cur = vec![0.0; a[i].len()];
-                for j in 0..a[i].len() {
-                    cur[j] = Hidden::f_delta(a[i][j]);
+                let mut cur = vec![0.0; cur_sz];
+                for j in 0..cur_sz {
+                    // cur[j] = Hidden::f_delta(a[i][j]);
+                    *cur.get_unchecked_mut(j) =
+                        Hidden::f_delta(*a.get_unchecked(i).get_unchecked(j));
                 }
-                let mut next_delta = vec![0.0; w.len()];
-                for j in 0..w.len() {
-                    for k in 0..w[0].len() {
-                        next_delta[j] += delta[k] * w[j][k];
+                let mut next_delta = vec![0.0; cur_sz];
+                for j in 0..cur_sz {
+                    for k in 0..nxt_sz {
+                        // next_delta[j] += delta[k] * w[j][k];
+                        *next_delta.get_unchecked_mut(j) +=
+                            *delta.get_unchecked(k) * *w.get_unchecked(j).get_unchecked(k);
                     }
                 }
                 delta = next_delta;
-                for j in 0..w.len() {
-                    delta[j] *= cur[j];
+                for j in 0..cur_sz {
+                    // delta[j] *= cur[j];
+                    *delta.get_unchecked_mut(j) *= *cur.get_unchecked(j);
                 }
             }
         }
         dw
     }
-    pub fn train(&mut self, x: &Vec<f64>, t: &Vec<f64>) {
-        let a = self.forward(x);
-        let y = a[a.len() - 1].clone();
-        let dw = self.backward(&a, x, &y, t);
-        for i in 0..self.nodes.len() - 1 {
-            for j in 0..self.w[i].len() {
-                for k in 0..self.w[i][0].len() {
-                    self.w[i][j][k] -= LR * dw[i][j][k];
+    pub fn train_single(&mut self, x: &Vec<f64>, t: &Vec<f64>) {
+        assert_eq!(self.nodes[0],x.len());
+        assert_eq!(self.nodes[self.nodes.len() - 1],t.len());
+        let (a, y) = unsafe { self.forward(x) };
+        let dw = unsafe { self.backward(&a, x, &y, t) };
+
+        unsafe {
+            for i in 0..self.nodes.len() - 1 {
+                for j in 0..self.w[i].len() {
+                    let width = self.w[i][0].len();
+                    for k in 0..width {
+                        // self.w[i][j][k] -= LR * dw[i][j][k];
+                        *self.w.get_unchecked_mut(i).get_unchecked_mut(j).get_unchecked_mut(k) -=
+                            LR * *dw.get_unchecked(i).get_unchecked(j).get_unchecked(k);
+                    }
                 }
             }
         }
@@ -186,9 +255,8 @@ impl<Hidden: NNFunc, Output: NNFunc> NeuralNetwork<Hidden, Output> {
         }
         let n = x.len();
         for i in 0..n {
-            let a = self.forward(&x[i]);
-            let y = a[a.len() - 1].clone();
-            let dw = self.backward(&a, &x[i], &y, &t[i]);
+            let (a, y) = unsafe { self.forward(&x[i]) };
+            let dw = unsafe { self.backward(&a, &x[i], &y, &t[i]) };
             for j in 0..self.nodes.len() - 1 {
                 for k in 0..self.w[j].len() {
                     for l in 0..self.w[j][0].len() {
@@ -208,7 +276,7 @@ impl<Hidden: NNFunc, Output: NNFunc> NeuralNetwork<Hidden, Output> {
         }
     }
     pub fn predict(&self, x: &Vec<f64>) -> Vec<f64> {
-        let res = self.forward(x);
-        res[self.nodes.len() - 1].clone()
+        let (_, res) = unsafe { self.forward(x) };
+        res
     }
 }
